@@ -1,0 +1,7 @@
+.git
+.github
+bin
+dev-log
+*.jsonl
+.env
+.env.*

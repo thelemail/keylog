@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+/bin/
+/dev-*.key
+/dev-log/
+*.jsonl
+.DS_Store
+.idea/
+.vscode/

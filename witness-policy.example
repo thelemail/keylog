@@ -1,0 +1,8 @@
+log <log-vkey-from-keylog-generate-keys>
+
+witness w1 <witness1-vkey> <witness1-submission-url>
+witness w2 <witness2-vkey> <witness2-submission-url>
+witness w3 <witness3-vkey> <witness3-submission-url>
+
+group trusted 2 w1 w2 w3
+quorum trusted

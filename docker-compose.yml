@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${KEYLOG_POSTGRES_USER:-keylog}
+      POSTGRES_PASSWORD: ${KEYLOG_POSTGRES_PASSWORD:-keylog}
+      POSTGRES_DB: ${KEYLOG_POSTGRES_DB:-keylog}
+    ports:
+      - "${KEYLOG_POSTGRES_PORT:-5442}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KEYLOG_POSTGRES_USER:-keylog}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres:
