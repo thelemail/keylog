@@ -191,22 +191,34 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 		signerStale note.Signer
 		vkey        string
 	}
+	newWitness := func(name string, priv ed25519.PrivateKey) (witness, error) {
+		reference, err := torchwood.NewCosignatureSigner(name, priv)
+		if err != nil {
+			return witness{}, err
+		}
+		return witness{
+			signerFresh: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())},
+			signerStale: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-72 * time.Hour).Unix())},
+			vkey:        reference.Verifier().String(),
+		}, nil
+	}
 	var witnesses []witness
+	var witnessKeys []ed25519.PrivateKey
 	for i := range 3 {
 		_, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			return fixtureFile{}, err
 		}
-		name := fmt.Sprintf("witness%d.example.org", i+1)
-		reference, err := torchwood.NewCosignatureSigner(name, priv)
+		w, err := newWitness(fmt.Sprintf("witness%d.example.org", i+1), priv)
 		if err != nil {
 			return fixtureFile{}, err
 		}
-		witnesses = append(witnesses, witness{
-			signerFresh: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())},
-			signerStale: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-72 * time.Hour).Unix())},
-			vkey:        reference.Verifier().String(),
-		})
+		witnesses = append(witnesses, w)
+		witnessKeys = append(witnessKeys, priv)
+	}
+	aliasWitness, err := newWitness("witness1-alias.example.org", witnessKeys[0])
+	if err != nil {
+		return fixtureFile{}, err
 	}
 	cosign := func(signers ...note.Signer) ([]byte, error) {
 		return note.Sign(&note.Note{Text: openNote.Text}, append([]note.Signer{logSigner}, signers...)...)
@@ -223,6 +235,14 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 	if err != nil {
 		return fixtureFile{}, err
 	}
+	allWitnessed, err := cosign(witnesses[0].signerFresh, witnesses[1].signerFresh, witnesses[2].signerFresh)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	aliasWitnessed, err := cosign(witnesses[0].signerFresh, aliasWitness.signerFresh)
+	if err != nil {
+		return fixtureFile{}, err
+	}
 
 	basePolicy := fixturePolicy{
 		Origin:                   origin,
@@ -234,6 +254,17 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 	prodPolicy := basePolicy
 	prodPolicy.WitnessVerifierKeys = []string{witnesses[0].vkey, witnesses[1].vkey, witnesses[2].vkey}
 	prodPolicy.WitnessThreshold = 2
+	allWitnessesPolicy := prodPolicy
+	allWitnessesPolicy.WitnessThreshold = 3
+	duplicateKeyPolicy := basePolicy
+	duplicateKeyPolicy.WitnessVerifierKeys = []string{witnesses[0].vkey, witnesses[0].vkey, witnesses[1].vkey}
+	duplicateKeyPolicy.WitnessThreshold = 2
+	aliasedKeyPolicy := basePolicy
+	aliasedKeyPolicy.WitnessVerifierKeys = []string{witnesses[0].vkey, aliasWitness.vkey}
+	aliasedKeyPolicy.WitnessThreshold = 2
+	excessThresholdPolicy := basePolicy
+	excessThresholdPolicy.WitnessVerifierKeys = []string{witnesses[0].vkey, witnesses[1].vkey}
+	excessThresholdPolicy.WitnessThreshold = 3
 	wrongOriginPolicy := basePolicy
 	wrongOriginPolicy.Origin = "other.example.org/keys"
 
@@ -251,6 +282,14 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 		return fixtureFile{}, err
 	}
 	staleProof, err := prove(e.index, e.pi, staleWitnessed)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	allWitnessedProof, err := prove(e.index, e.pi, allWitnessed)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	aliasWitnessedProof, err := prove(e.index, e.pi, aliasWitnessed)
 	if err != nil {
 		return fixtureFile{}, err
 	}
@@ -291,6 +330,10 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 		{Name: "ok-witnessed", Label: e.label, Record: record, Proof: witnessedProof, Policy: prodPolicy, Expect: "ok"},
 		{Name: "ok-second-label", Label: entries[2].label, Record: string(entries[2].record), Proof: otherEntryProof, Policy: basePolicy, Expect: "ok"},
 		{Name: "witness-threshold-unmet", Label: e.label, Record: record, Proof: oneWitnessProof, Policy: prodPolicy, Expect: "tlog_witness_policy_unmet"},
+		{Name: "ok-witnessed-all-three", Label: e.label, Record: record, Proof: allWitnessedProof, Policy: allWitnessesPolicy, Expect: "ok"},
+		{Name: "witness-duplicate-key", Label: e.label, Record: record, Proof: oneWitnessProof, Policy: duplicateKeyPolicy, Expect: "tlog_policy_invalid"},
+		{Name: "witness-aliased-key", Label: e.label, Record: record, Proof: aliasWitnessedProof, Policy: aliasedKeyPolicy, Expect: "tlog_policy_invalid"},
+		{Name: "witness-threshold-exceeds-keys", Label: e.label, Record: record, Proof: witnessedProof, Policy: excessThresholdPolicy, Expect: "tlog_policy_invalid"},
 		{Name: "stale-cosignatures", Label: e.label, Record: record, Proof: staleProof, Policy: prodPolicy, Expect: "tlog_checkpoint_stale"},
 		{Name: "wrong-origin-policy", Label: e.label, Record: record, Proof: validProof, Policy: wrongOriginPolicy, Expect: "tlog_checkpoint_unverified"},
 		{Name: "tampered-index", Label: e.label, Record: record, Proof: tamperedIndex, Policy: basePolicy, Expect: "tlog_inclusion_invalid"},
