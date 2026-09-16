@@ -187,9 +187,10 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 	}
 
 	type witness struct {
-		signerFresh note.Signer
-		signerStale note.Signer
-		vkey        string
+		signerFresh  note.Signer
+		signerStale  note.Signer
+		signerFuture note.Signer
+		vkey         string
 	}
 	newWitness := func(name string, priv ed25519.PrivateKey) (witness, error) {
 		reference, err := torchwood.NewCosignatureSigner(name, priv)
@@ -197,9 +198,10 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 			return witness{}, err
 		}
 		return witness{
-			signerFresh: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())},
-			signerStale: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-72 * time.Hour).Unix())},
-			vkey:        reference.Verifier().String(),
+			signerFresh:  &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())},
+			signerStale:  &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-72 * time.Hour).Unix())},
+			signerFuture: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(time.Hour).Unix())},
+			vkey:         reference.Verifier().String(),
 		}, nil
 	}
 	var witnesses []witness
@@ -240,6 +242,26 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 		return fixtureFile{}, err
 	}
 	aliasWitnessed, err := cosign(witnesses[0].signerFresh, aliasWitness.signerFresh)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	staleExtra, err := cosign(witnesses[0].signerFresh, witnesses[1].signerFresh, witnesses[2].signerStale)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	futureExtra, err := cosign(witnesses[0].signerFresh, witnesses[1].signerFresh, witnesses[2].signerFuture)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	oneFreshTwoStale, err := cosign(witnesses[0].signerFresh, witnesses[1].signerStale, witnesses[2].signerStale)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	futureWitnessed, err := cosign(witnesses[0].signerFuture, witnesses[1].signerFuture)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	freshStaleFuture, err := cosign(witnesses[0].signerFresh, witnesses[1].signerStale, witnesses[2].signerFuture)
 	if err != nil {
 		return fixtureFile{}, err
 	}
@@ -293,6 +315,26 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 	if err != nil {
 		return fixtureFile{}, err
 	}
+	staleExtraProof, err := prove(e.index, e.pi, staleExtra)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	futureExtraProof, err := prove(e.index, e.pi, futureExtra)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	oneFreshTwoStaleProof, err := prove(e.index, e.pi, oneFreshTwoStale)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	futureProof, err := prove(e.index, e.pi, futureWitnessed)
+	if err != nil {
+		return fixtureFile{}, err
+	}
+	freshStaleFutureProof, err := prove(e.index, e.pi, freshStaleFuture)
+	if err != nil {
+		return fixtureFile{}, err
+	}
 	otherEntryProof, err := prove(entries[2].index, entries[2].pi, signedCheckpoint)
 	if err != nil {
 		return fixtureFile{}, err
@@ -335,6 +377,11 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 		{Name: "witness-aliased-key", Label: e.label, Record: record, Proof: aliasWitnessedProof, Policy: aliasedKeyPolicy, Expect: "tlog_policy_invalid"},
 		{Name: "witness-threshold-exceeds-keys", Label: e.label, Record: record, Proof: witnessedProof, Policy: excessThresholdPolicy, Expect: "tlog_policy_invalid"},
 		{Name: "stale-cosignatures", Label: e.label, Record: record, Proof: staleProof, Policy: prodPolicy, Expect: "tlog_checkpoint_stale"},
+		{Name: "ok-fresh-quorum-stale-extra", Label: e.label, Record: record, Proof: staleExtraProof, Policy: prodPolicy, Expect: "ok"},
+		{Name: "ok-fresh-quorum-future-extra", Label: e.label, Record: record, Proof: futureExtraProof, Policy: prodPolicy, Expect: "ok"},
+		{Name: "stale-quorum-one-fresh", Label: e.label, Record: record, Proof: oneFreshTwoStaleProof, Policy: prodPolicy, Expect: "tlog_checkpoint_stale"},
+		{Name: "future-cosignatures", Label: e.label, Record: record, Proof: futureProof, Policy: prodPolicy, Expect: "tlog_checkpoint_stale"},
+		{Name: "one-fresh-one-stale-one-future", Label: e.label, Record: record, Proof: freshStaleFutureProof, Policy: prodPolicy, Expect: "tlog_checkpoint_stale"},
 		{Name: "wrong-origin-policy", Label: e.label, Record: record, Proof: validProof, Policy: wrongOriginPolicy, Expect: "tlog_checkpoint_unverified"},
 		{Name: "tampered-index", Label: e.label, Record: record, Proof: tamperedIndex, Policy: basePolicy, Expect: "tlog_inclusion_invalid"},
 		{Name: "tampered-path", Label: e.label, Record: record, Proof: tamperedPath, Policy: basePolicy, Expect: "tlog_inclusion_invalid"},

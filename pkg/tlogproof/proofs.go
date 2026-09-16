@@ -17,6 +17,8 @@ var ErrCheckpointBehind = errors.New("tlogproof: checkpoint does not cover entry
 
 var ErrCheckpointStale = errors.New("tlogproof: checkpoint cosignatures are stale")
 
+const maxForwardSkew = 5 * time.Minute
+
 func LeafHash(beta, record []byte) []byte {
 	h := sha256.New()
 	h.Write(record)
@@ -100,17 +102,24 @@ func (b *Builder) BuildAt(ctx context.Context, signed []byte, checkpoint torchwo
 
 func (b *Builder) checkFreshness(sigs []note.Signature, origin string) error {
 	now := b.clock()
+	fresh := make([]note.Signature, 0, len(sigs))
 	for _, sig := range sigs {
 		if sig.Name == origin {
+			fresh = append(fresh, sig)
 			continue
 		}
 		ts, err := torchwood.CosignatureTimestamp(sig)
 		if err != nil {
 			return fmt.Errorf("tlogproof: cosignature %q timestamp: %w", sig.Name, err)
 		}
-		if now.Sub(time.Unix(ts, 0)) > b.maxCosigAge {
-			return fmt.Errorf("%w: %q signed at %d", ErrCheckpointStale, sig.Name, ts)
+		signed := time.Unix(ts, 0)
+		if now.Sub(signed) > b.maxCosigAge || signed.Sub(now) > maxForwardSkew {
+			continue
 		}
+		fresh = append(fresh, sig)
+	}
+	if err := b.policy.Check(origin, fresh); err != nil {
+		return fmt.Errorf("%w: %d of %d signatures inside freshness window: %w", ErrCheckpointStale, len(fresh), len(sigs), err)
 	}
 	return nil
 }
