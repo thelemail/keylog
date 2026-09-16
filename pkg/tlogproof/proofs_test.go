@@ -174,8 +174,6 @@ func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
 	}
 }
 
-var errQuorumUnmet = errors.New("quorum unmet")
-
 func TestCheckpointSignatureOrdering(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	maxAge := 24 * time.Hour
@@ -192,33 +190,34 @@ func TestCheckpointSignatureOrdering(t *testing.T) {
 		name    string
 		signers []note.Signer
 		want    error
+		unmet   bool
 	}{
-		{"invalid witness first", []note.Signer{log, bad, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature},
-		{"invalid witness last", []note.Signer{log, w1.at(fresh), w2.at(fresh), bad}, tlogproof.ErrInvalidSignature},
-		{"invalid extra witness", []note.Signer{log, w1.at(fresh), w2.at(fresh), corruptSigner{w3.at(fresh)}}, tlogproof.ErrInvalidSignature},
-		{"invalid log first", []note.Signer{badLog, log, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature},
-		{"invalid log last", []note.Signer{log, w1.at(fresh), w2.at(fresh), badLog}, tlogproof.ErrInvalidSignature},
-		{"repeated log", []note.Signer{log, log, w1.at(fresh), w2.at(fresh)}, nil},
-		{"fresh then fresher", []note.Signer{log, w1.at(fresh), w1.at(fresher), w2.at(fresh)}, nil},
-		{"fresher then fresh", []note.Signer{log, w1.at(fresher), w1.at(fresh), w2.at(fresh)}, nil},
-		{"stale then fresh", []note.Signer{log, w1.at(stale), w1.at(fresh), w2.at(fresh)}, nil},
-		{"fresh then stale", []note.Signer{log, w1.at(fresh), w1.at(stale), w2.at(fresh)}, nil},
-		{"future then fresh", []note.Signer{log, w1.at(future), w1.at(fresh), w2.at(fresh)}, nil},
-		{"fresh then future", []note.Signer{log, w1.at(fresh), w1.at(future), w2.at(fresh)}, nil},
-		{"one witness twice", []note.Signer{log, w1.at(fresh), w1.at(fresher)}, errQuorumUnmet},
+		{"invalid witness first", []note.Signer{log, bad, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature, false},
+		{"invalid witness last", []note.Signer{log, w1.at(fresh), w2.at(fresh), bad}, tlogproof.ErrInvalidSignature, false},
+		{"invalid extra witness", []note.Signer{log, w1.at(fresh), w2.at(fresh), corruptSigner{w3.at(fresh)}}, tlogproof.ErrInvalidSignature, false},
+		{"invalid log first", []note.Signer{badLog, log, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature, false},
+		{"invalid log last", []note.Signer{log, w1.at(fresh), w2.at(fresh), badLog}, tlogproof.ErrInvalidSignature, false},
+		{"repeated log", []note.Signer{log, log, w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"fresh then fresher", []note.Signer{log, w1.at(fresh), w1.at(fresher), w2.at(fresh)}, nil, false},
+		{"fresher then fresh", []note.Signer{log, w1.at(fresher), w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"stale then fresh", []note.Signer{log, w1.at(stale), w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"fresh then stale", []note.Signer{log, w1.at(fresh), w1.at(stale), w2.at(fresh)}, nil, false},
+		{"future then fresh", []note.Signer{log, w1.at(future), w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"fresh then future", []note.Signer{log, w1.at(fresh), w1.at(future), w2.at(fresh)}, nil, false},
+		{"one witness twice", []note.Signer{log, w1.at(fresh), w1.at(fresher)}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := q.checkpoint(t, now, maxAge, tt.signers...)
-			if tt.want == nil {
-				if err != nil {
-					t.Fatalf("checkpoint: %v", err)
+			if tt.unmet {
+				if err == nil || errors.Is(err, tlogproof.ErrInvalidSignature) {
+					t.Fatalf("err = %v, want an unmet quorum", err)
 				}
 				return
 			}
-			if tt.want == errQuorumUnmet {
-				if err == nil || errors.Is(err, tlogproof.ErrInvalidSignature) {
-					t.Fatalf("err = %v, want an unmet quorum", err)
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("checkpoint: %v", err)
 				}
 				return
 			}
