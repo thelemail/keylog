@@ -1,11 +1,15 @@
 package tlogproof
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 
 	"filippo.io/torchwood"
@@ -17,7 +21,12 @@ var ErrCheckpointBehind = errors.New("tlogproof: checkpoint does not cover entry
 
 var ErrCheckpointStale = errors.New("tlogproof: checkpoint cosignatures are stale")
 
-const maxForwardSkew = 5 * time.Minute
+var ErrInvalidSignature = errors.New("tlogproof: checkpoint carries an invalid signature from a known key")
+
+const (
+	maxForwardSkew     = 5 * time.Minute
+	maxCosignatureTime = 1<<53 - 1
+)
 
 func LeafHash(beta, record []byte) []byte {
 	h := sha256.New()
@@ -66,11 +75,15 @@ func (b *Builder) Checkpoint(ctx context.Context) ([]byte, torchwood.Checkpoint,
 		}
 		return nil, torchwood.Checkpoint{}, fmt.Errorf("tlogproof: read checkpoint: %w", err)
 	}
-	checkpoint, n, err := torchwood.VerifyCheckpoint(signed, b.policy)
+	sigs, err := knownSignatures(signed, b.policy)
+	if err != nil {
+		return nil, torchwood.Checkpoint{}, err
+	}
+	checkpoint, _, err := torchwood.VerifyCheckpoint(signed, b.policy)
 	if err != nil {
 		return nil, torchwood.Checkpoint{}, fmt.Errorf("tlogproof: verify checkpoint: %w", err)
 	}
-	if err := b.checkFreshness(n.Sigs, checkpoint.Origin); err != nil {
+	if err := b.checkFreshness(sigs, checkpoint.Origin); err != nil {
 		return nil, torchwood.Checkpoint{}, err
 	}
 	return signed, checkpoint, nil
@@ -102,26 +115,79 @@ func (b *Builder) BuildAt(ctx context.Context, signed []byte, checkpoint torchwo
 
 func (b *Builder) checkFreshness(sigs []note.Signature, origin string) error {
 	now := b.clock()
-	fresh := make([]note.Signature, 0, len(sigs))
+	type signer struct {
+		name string
+		hash uint32
+	}
+	var order []signer
+	chosen := make(map[signer]note.Signature)
+	newest := make(map[signer]int64)
 	for _, sig := range sigs {
+		key := signer{sig.Name, sig.Hash}
 		if sig.Name == origin {
-			fresh = append(fresh, sig)
+			if _, ok := chosen[key]; !ok {
+				order = append(order, key)
+				chosen[key] = sig
+			}
 			continue
 		}
 		ts, err := torchwood.CosignatureTimestamp(sig)
 		if err != nil {
 			return fmt.Errorf("tlogproof: cosignature %q timestamp: %w", sig.Name, err)
 		}
+		if ts > maxCosignatureTime {
+			return fmt.Errorf("%w: cosignature %q timestamp out of range", ErrInvalidSignature, sig.Name)
+		}
 		signed := time.Unix(ts, 0)
 		if now.Sub(signed) > b.maxCosigAge || signed.Sub(now) > maxForwardSkew {
 			continue
 		}
-		fresh = append(fresh, sig)
+		if _, ok := chosen[key]; !ok {
+			order = append(order, key)
+		} else if ts <= newest[key] {
+			continue
+		}
+		chosen[key] = sig
+		newest[key] = ts
+	}
+	fresh := make([]note.Signature, 0, len(order))
+	for _, key := range order {
+		fresh = append(fresh, chosen[key])
 	}
 	if err := b.policy.Check(origin, fresh); err != nil {
 		return fmt.Errorf("%w: %d of %d signatures inside freshness window: %w", ErrCheckpointStale, len(fresh), len(sigs), err)
 	}
 	return nil
+}
+
+func knownSignatures(signedNote []byte, known note.Verifiers) ([]note.Signature, error) {
+	split := bytes.LastIndex(signedNote, []byte("\n\n"))
+	if split < 0 {
+		return nil, errors.New("tlogproof: checkpoint has no signature block")
+	}
+	text := signedNote[:split+1]
+	var sigs []note.Signature
+	for line := range strings.Lines(string(signedNote[split+2:])) {
+		name, b64, ok := strings.Cut(strings.TrimPrefix(strings.TrimSuffix(line, "\n"), "— "), " ")
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if !ok || err != nil || len(raw) < 5 {
+			return nil, errors.New("tlogproof: malformed checkpoint signature line")
+		}
+		hash := binary.BigEndian.Uint32(raw)
+		verifier, err := known.Verifier(name, hash)
+		var unknown *note.UnknownVerifierError
+		if errors.As(err, &unknown) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("tlogproof: checkpoint signature %q: %w", name, err)
+		}
+		if !verifier.Verify(text, raw[4:]) {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidSignature, name)
+		}
+		sigs = append(sigs, note.Signature{Name: name, Hash: hash, Base64: b64})
+	}
+	return sigs, nil
 }
 
 func LabelHash(label string) []byte {
