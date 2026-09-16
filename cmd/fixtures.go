@@ -187,10 +187,12 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 	}
 
 	type witness struct {
-		signerFresh  note.Signer
-		signerStale  note.Signer
-		signerFuture note.Signer
-		vkey         string
+		signerFresh   note.Signer
+		signerFresher note.Signer
+		signerStale   note.Signer
+		signerFuture  note.Signer
+		signerInvalid note.Signer
+		vkey          string
 	}
 	newWitness := func(name string, priv ed25519.PrivateKey) (witness, error) {
 		reference, err := torchwood.NewCosignatureSigner(name, priv)
@@ -198,10 +200,12 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 			return witness{}, err
 		}
 		return witness{
-			signerFresh:  &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())},
-			signerStale:  &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-72 * time.Hour).Unix())},
-			signerFuture: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(time.Hour).Unix())},
-			vkey:         reference.Verifier().String(),
+			signerFresh:   &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())},
+			signerFresher: &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-30 * time.Second).Unix())},
+			signerStale:   &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-72 * time.Hour).Unix())},
+			signerFuture:  &fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(time.Hour).Unix())},
+			signerInvalid: corruptSigner{&fixedTimeCosigner{name: name, hash: reference.KeyHash(), key: priv, ts: uint64(now.Add(-time.Minute).Unix())}},
+			vkey:          reference.Verifier().String(),
 		}, nil
 	}
 	var witnesses []witness
@@ -222,8 +226,35 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 	if err != nil {
 		return fixtureFile{}, err
 	}
+	signWith := func(signers ...note.Signer) ([]byte, error) {
+		return note.Sign(&note.Note{Text: openNote.Text}, signers...)
+	}
 	cosign := func(signers ...note.Signer) ([]byte, error) {
-		return note.Sign(&note.Note{Text: openNote.Text}, append([]note.Signer{logSigner}, signers...)...)
+		return signWith(append([]note.Signer{logSigner}, signers...)...)
+	}
+	w1, w2, w3 := witnesses[0], witnesses[1], witnesses[2]
+	badLog := corruptSigner{logSigner}
+	orderingNotes := []struct {
+		name    string
+		policy  string
+		expect  string
+		signers []note.Signer
+	}{
+		{"witness-invalid-first", "prod", "tlog_checkpoint_unverified", []note.Signer{logSigner, w1.signerInvalid, w1.signerFresh, w2.signerFresh}},
+		{"witness-invalid-last", "prod", "tlog_checkpoint_unverified", []note.Signer{logSigner, w1.signerFresh, w2.signerFresh, w1.signerInvalid}},
+		{"witness-invalid-only-extra", "prod", "tlog_checkpoint_unverified", []note.Signer{logSigner, w1.signerFresh, w2.signerFresh, w3.signerInvalid}},
+		{"witness-invalid-below-threshold", "prod", "tlog_checkpoint_unverified", []note.Signer{logSigner, w1.signerInvalid}},
+		{"ok-witness-repeated-fresh-newest-first", "prod", "ok", []note.Signer{logSigner, w1.signerFresher, w1.signerFresh, w2.signerFresh}},
+		{"ok-witness-repeated-fresh-newest-last", "prod", "ok", []note.Signer{logSigner, w1.signerFresh, w1.signerFresher, w2.signerFresh}},
+		{"ok-witness-repeated-stale-first", "prod", "ok", []note.Signer{logSigner, w1.signerStale, w1.signerFresher, w2.signerFresh}},
+		{"ok-witness-repeated-stale-last", "prod", "ok", []note.Signer{logSigner, w1.signerFresher, w1.signerStale, w2.signerFresh}},
+		{"ok-witness-repeated-future-first", "prod", "ok", []note.Signer{logSigner, w1.signerFuture, w1.signerFresher, w2.signerFresh}},
+		{"ok-witness-repeated-future-last", "prod", "ok", []note.Signer{logSigner, w1.signerFresher, w1.signerFuture, w2.signerFresh}},
+		{"witness-repeated-counts-once", "prod", "tlog_witness_policy_unmet", []note.Signer{logSigner, w1.signerFresh, w1.signerFresher}},
+		{"witness-repeated-stale-counts-once", "prod", "tlog_checkpoint_stale", []note.Signer{logSigner, w1.signerStale, w1.signerStale, w2.signerFresh}},
+		{"log-invalid-first", "base", "tlog_checkpoint_unverified", []note.Signer{badLog, logSigner}},
+		{"log-invalid-last", "base", "tlog_checkpoint_unverified", []note.Signer{logSigner, badLog}},
+		{"ok-log-repeated", "base", "ok", []note.Signer{logSigner, logSigner}},
 	}
 	witnessed, err := cosign(witnesses[0].signerFresh, witnesses[1].signerFresh)
 	if err != nil {
@@ -394,6 +425,21 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 		{Name: "garbage-proof", Label: e.label, Record: record, Proof: "not a proof at all\n", Policy: basePolicy, Expect: "tlog_proof_malformed"},
 		{Name: "missing-proof", Label: e.label, Record: record, Proof: "", Policy: basePolicy, Expect: "tlog_proof_missing"},
 	}
+	for _, o := range orderingNotes {
+		signed, err := signWith(o.signers...)
+		if err != nil {
+			return fixtureFile{}, err
+		}
+		p, err := prove(e.index, e.pi, signed)
+		if err != nil {
+			return fixtureFile{}, err
+		}
+		policy := basePolicy
+		if o.policy == "prod" {
+			policy = prodPolicy
+		}
+		cases = append(cases, fixtureCase{Name: o.name, Label: e.label, Record: record, Proof: p, Policy: policy, Expect: o.expect})
+	}
 	for _, fc := range cases {
 		if fc.Proof == "" && fc.Expect != "tlog_proof_missing" {
 			return fixtureFile{}, fmt.Errorf("fixture case %s has empty proof", fc.Name)
@@ -418,6 +464,19 @@ func (s *fixedTimeCosigner) Sign(msg []byte) ([]byte, error) {
 	out := make([]byte, 0, 8+ed25519.SignatureSize)
 	out = binary.BigEndian.AppendUint64(out, s.ts)
 	return append(out, sig...), nil
+}
+
+type corruptSigner struct {
+	note.Signer
+}
+
+func (s corruptSigner) Sign(msg []byte) ([]byte, error) {
+	sig, err := s.Signer.Sign(msg)
+	if err != nil {
+		return nil, err
+	}
+	sig[len(sig)-1] ^= 0x01
+	return sig, nil
 }
 
 func mustVerifier(vkey string) note.Verifier {

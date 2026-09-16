@@ -48,10 +48,28 @@ func (w witness) at(ts time.Time) note.Signer {
 	return &fixedTimeCosigner{name: w.name, hash: w.hash, key: w.key, ts: ts}
 }
 
-func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
-	maxAge := 24 * time.Hour
+type corruptSigner struct {
+	note.Signer
+}
 
+func (s corruptSigner) Sign(msg []byte) ([]byte, error) {
+	sig, err := s.Signer.Sign(msg)
+	if err != nil {
+		return nil, err
+	}
+	sig[len(sig)-1] ^= 0x01
+	return sig, nil
+}
+
+type quorum struct {
+	logSigner note.Signer
+	witnesses []witness
+	policy    torchwood.Policy
+	text      string
+}
+
+func newQuorum(t *testing.T) quorum {
+	t.Helper()
 	logSkey, logVkey, err := note.GenerateKey(rand.Reader, testOrigin)
 	if err != nil {
 		t.Fatal(err)
@@ -81,12 +99,45 @@ func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	text := torchwood.Checkpoint{Origin: testOrigin, Tree: tlog.Tree{N: 1, Hash: tlog.RecordHash([]byte("entry"))}}.String()
+	return quorum{logSigner: logSigner, witnesses: witnesses, policy: policy, text: text}
+}
+
+func (q quorum) checkpoint(t *testing.T, now time.Time, maxAge time.Duration, signers ...note.Signer) (torchwood.Checkpoint, error) {
+	t.Helper()
+	signed, err := note.Sign(&note.Note{Text: q.text}, signers...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint"), signed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tiles, err := torchwood.NewTileFS(os.DirFS(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := tlogproof.NewBuilder(tlogproof.BuilderConfig{
+		MaxCosignatureAge: maxAge,
+		Policy:            q.policy,
+		Tiles:             tiles,
+		Clock:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, checkpoint, err := builder.Checkpoint(t.Context())
+	return checkpoint, err
+}
+
+func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	maxAge := 24 * time.Hour
+	q := newQuorum(t)
 	fresh := now.Add(-time.Minute)
 	stale := now.Add(-72 * time.Hour)
 	future := now.Add(time.Hour)
-	w1, w2, w3 := witnesses[0], witnesses[1], witnesses[2]
+	w1, w2, w3 := q.witnesses[0], q.witnesses[1], q.witnesses[2]
 
 	tests := []struct {
 		name    string
@@ -106,28 +157,7 @@ func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			signed, err := note.Sign(&note.Note{Text: text}, append([]note.Signer{logSigner}, tt.signers...)...)
-			if err != nil {
-				t.Fatal(err)
-			}
-			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "checkpoint"), signed, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			tiles, err := torchwood.NewTileFS(os.DirFS(dir))
-			if err != nil {
-				t.Fatal(err)
-			}
-			builder, err := tlogproof.NewBuilder(tlogproof.BuilderConfig{
-				MaxCosignatureAge: maxAge,
-				Policy:            policy,
-				Tiles:             tiles,
-				Clock:             func() time.Time { return now },
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, checkpoint, err := builder.Checkpoint(t.Context())
+			checkpoint, err := q.checkpoint(t, now, maxAge, append([]note.Signer{q.logSigner}, tt.signers...)...)
 			if tt.stale {
 				if !errors.Is(err, tlogproof.ErrCheckpointStale) {
 					t.Fatalf("err = %v, want ErrCheckpointStale", err)
@@ -139,6 +169,60 @@ func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
 			}
 			if checkpoint.N != 1 {
 				t.Fatalf("tree size = %d, want 1", checkpoint.N)
+			}
+		})
+	}
+}
+
+func TestCheckpointSignatureOrdering(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	maxAge := 24 * time.Hour
+	q := newQuorum(t)
+	fresh := now.Add(-time.Minute)
+	fresher := now.Add(-30 * time.Second)
+	stale := now.Add(-72 * time.Hour)
+	future := now.Add(time.Hour)
+	w1, w2, w3 := q.witnesses[0], q.witnesses[1], q.witnesses[2]
+	log, badLog := q.logSigner, corruptSigner{q.logSigner}
+	bad := corruptSigner{w1.at(fresh)}
+
+	tests := []struct {
+		name    string
+		signers []note.Signer
+		want    error
+		unmet   bool
+	}{
+		{"invalid witness first", []note.Signer{log, bad, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature, false},
+		{"invalid witness last", []note.Signer{log, w1.at(fresh), w2.at(fresh), bad}, tlogproof.ErrInvalidSignature, false},
+		{"invalid extra witness", []note.Signer{log, w1.at(fresh), w2.at(fresh), corruptSigner{w3.at(fresh)}}, tlogproof.ErrInvalidSignature, false},
+		{"invalid log first", []note.Signer{badLog, log, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature, false},
+		{"invalid log last", []note.Signer{log, w1.at(fresh), w2.at(fresh), badLog}, tlogproof.ErrInvalidSignature, false},
+		{"repeated log", []note.Signer{log, log, w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"fresh then fresher", []note.Signer{log, w1.at(fresh), w1.at(fresher), w2.at(fresh)}, nil, false},
+		{"fresher then fresh", []note.Signer{log, w1.at(fresher), w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"stale then fresh", []note.Signer{log, w1.at(stale), w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"fresh then stale", []note.Signer{log, w1.at(fresh), w1.at(stale), w2.at(fresh)}, nil, false},
+		{"future then fresh", []note.Signer{log, w1.at(future), w1.at(fresh), w2.at(fresh)}, nil, false},
+		{"fresh then future", []note.Signer{log, w1.at(fresh), w1.at(future), w2.at(fresh)}, nil, false},
+		{"one witness twice", []note.Signer{log, w1.at(fresh), w1.at(fresher)}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := q.checkpoint(t, now, maxAge, tt.signers...)
+			if tt.unmet {
+				if err == nil || errors.Is(err, tlogproof.ErrInvalidSignature) {
+					t.Fatalf("err = %v, want an unmet quorum", err)
+				}
+				return
+			}
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("checkpoint: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
 		})
 	}
