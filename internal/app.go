@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"filippo.io/torchwood"
 	"github.com/go-chi/chi/v5"
 
 	"github.com/thelemail/keylog/internal/config"
+	healthhandler "github.com/thelemail/keylog/internal/handler/http/health"
 	loghandler "github.com/thelemail/keylog/internal/handler/http/log"
 	"github.com/thelemail/keylog/internal/handler/http/middleware"
 	submithandler "github.com/thelemail/keylog/internal/handler/http/submit"
@@ -102,6 +104,8 @@ func newProofBuilder(cfg config.Log) (*tlogproof.Builder, error) {
 	})
 }
 
+const healthTimeout = 2 * time.Second
+
 type Server struct {
 	srv           *http.Server
 	svc           service.Log
@@ -118,6 +122,10 @@ func NewServer(app *App) *Server {
 
 	r.Get("/healthz", ok)
 	r.Get("/readyz", ok)
+	healthhandler.New(healthTimeout, map[string]healthhandler.Check{
+		"database": app.DB.PingContext,
+		"tiles":    checkpointReadable(cfg.Log.Path),
+	}).Mount(r)
 
 	if cfg.HTTP.WellKnownPath != "" {
 		r.Handle("/.well-known/*", http.StripPrefix("/.well-known/", http.FileServer(http.Dir(cfg.HTTP.WellKnownPath))))
@@ -188,4 +196,12 @@ func (s *Server) sweepLoop(ctx context.Context) {
 func ok(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = w.Write([]byte("ok"))
+}
+
+func checkpointReadable(dir string) healthhandler.Check {
+	path := filepath.Join(dir, "checkpoint")
+	return func(context.Context) error {
+		_, err := os.ReadFile(path)
+		return err
+	}
 }
