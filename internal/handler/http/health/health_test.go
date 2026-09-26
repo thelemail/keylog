@@ -12,13 +12,17 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func get(t *testing.T, h *Handler) *httptest.ResponseRecorder {
+func request(t *testing.T, h *Handler, method string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
 	h.Mount(r)
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(method, "/health", nil))
 	return rec
+}
+
+func get(t *testing.T, h *Handler) *httptest.ResponseRecorder {
+	return request(t, h, http.MethodGet)
 }
 
 func up(context.Context) error { return nil }
@@ -60,5 +64,15 @@ func TestHealthGivesUpOnAHangingCheck(t *testing.T) {
 	}
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+func TestHealthAnswersHeadProbes(t *testing.T) {
+	if rec := request(t, New(time.Second, map[string]Check{"database": up}), http.MethodHead); rec.Code != http.StatusOK {
+		t.Fatalf("HEAD status %d", rec.Code)
+	}
+	failing := func(context.Context) error { return errors.New("down") }
+	if rec := request(t, New(time.Second, map[string]Check{"database": failing}), http.MethodHead); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("HEAD status %d while down", rec.Code)
 	}
 }
