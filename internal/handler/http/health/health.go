@@ -23,6 +23,7 @@ func New(timeout time.Duration, checks map[string]Check) *Handler {
 
 func (h *Handler) Mount(r chi.Router) {
 	r.Get("/health", h.serve)
+	r.Head("/health", h.serve)
 }
 
 type report struct {
