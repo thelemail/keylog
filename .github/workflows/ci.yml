@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   workflow_call:
+    secrets:
+      TRUST_READ_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -25,6 +28,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - uses: ./.github/actions/private-modules
+        with:
+          token: ${{ secrets.TRUST_READ_TOKEN }}
 
       - name: Check formatting
         run: |
@@ -54,4 +61,4 @@ jobs:
         run: go build ./...
 
       - name: Build the image
-        run: docker build --build-arg GIT_COMMIT="$GITHUB_SHA" -t keylog:ci .
+        run: docker build --secret id=netrc,src="$HOME/.netrc" --build-arg GIT_COMMIT="$GITHUB_SHA" -t keylog:ci .

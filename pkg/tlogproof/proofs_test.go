@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"filippo.io/torchwood"
+	trusttlog "github.com/thelemail/trust/tlog"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
 
@@ -62,10 +63,11 @@ func (s corruptSigner) Sign(msg []byte) ([]byte, error) {
 }
 
 type quorum struct {
-	logSigner note.Signer
-	witnesses []witness
-	policy    torchwood.Policy
-	text      string
+	logSigner  note.Signer
+	logVkey    string
+	witnesses  []witness
+	policyPath string
+	text       string
 }
 
 func newQuorum(t *testing.T) quorum {
@@ -95,12 +97,37 @@ func newQuorum(t *testing.T) quorum {
 		policyLines = append(policyLines, fmt.Sprintf("witness w%d %s", i+1, w.vkey))
 	}
 	policyLines = append(policyLines, "group trusted 2 w1 w2 w3", "quorum trusted")
-	policy, err := torchwood.ParsePolicy([]byte(strings.Join(policyLines, "\n") + "\n"))
-	if err != nil {
+	policyPath := filepath.Join(t.TempDir(), "witness-policy")
+	if err := os.WriteFile(policyPath, []byte(strings.Join(policyLines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	text := torchwood.Checkpoint{Origin: testOrigin, Tree: tlog.Tree{N: 1, Hash: tlog.RecordHash([]byte("entry"))}}.String()
-	return quorum{logSigner: logSigner, witnesses: witnesses, policy: policy, text: text}
+	return quorum{logSigner: logSigner, logVkey: logVkey, witnesses: witnesses, policyPath: policyPath, text: text}
+}
+
+func (q quorum) policy(t *testing.T, maxAge time.Duration) trusttlog.Policy {
+	t.Helper()
+	policy, err := tlogproof.NewPolicy(tlogproof.PolicyConfig{
+		Origin:            testOrigin,
+		NoteVerifierKey:   q.logVkey,
+		WitnessPolicyPath: q.policyPath,
+		MaxCosignatureAge: maxAge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy
+}
+
+func code(err error) string {
+	var f *trusttlog.Failure
+	if errors.As(err, &f) {
+		return f.Code
+	}
+	if err != nil {
+		return "unexpected: " + err.Error()
+	}
+	return trusttlog.CodeOK
 }
 
 func (q quorum) checkpoint(t *testing.T, now time.Time, maxAge time.Duration, signers ...note.Signer) (torchwood.Checkpoint, error) {
@@ -118,10 +145,9 @@ func (q quorum) checkpoint(t *testing.T, now time.Time, maxAge time.Duration, si
 		t.Fatal(err)
 	}
 	builder, err := tlogproof.NewBuilder(tlogproof.BuilderConfig{
-		MaxCosignatureAge: maxAge,
-		Policy:            q.policy,
-		Tiles:             tiles,
-		Clock:             func() time.Time { return now },
+		Policy: q.policy(t, maxAge),
+		Tiles:  tiles,
+		Clock:  func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -159,8 +185,8 @@ func TestCheckpointFreshnessAppliesToQuorum(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			checkpoint, err := q.checkpoint(t, now, maxAge, append([]note.Signer{q.logSigner}, tt.signers...)...)
 			if tt.stale {
-				if !errors.Is(err, tlogproof.ErrCheckpointStale) {
-					t.Fatalf("err = %v, want ErrCheckpointStale", err)
+				if code(err) != trusttlog.CodeCheckpointStale {
+					t.Fatalf("err = %v, want a stale checkpoint", err)
 				}
 				return
 			}
@@ -189,40 +215,27 @@ func TestCheckpointSignatureOrdering(t *testing.T) {
 	tests := []struct {
 		name    string
 		signers []note.Signer
-		want    error
-		unmet   bool
+		want    string
 	}{
-		{"invalid witness first", []note.Signer{log, bad, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature, false},
-		{"invalid witness last", []note.Signer{log, w1.at(fresh), w2.at(fresh), bad}, tlogproof.ErrInvalidSignature, false},
-		{"invalid extra witness", []note.Signer{log, w1.at(fresh), w2.at(fresh), corruptSigner{w3.at(fresh)}}, tlogproof.ErrInvalidSignature, false},
-		{"invalid log first", []note.Signer{badLog, log, w1.at(fresh), w2.at(fresh)}, tlogproof.ErrInvalidSignature, false},
-		{"invalid log last", []note.Signer{log, w1.at(fresh), w2.at(fresh), badLog}, tlogproof.ErrInvalidSignature, false},
-		{"repeated log", []note.Signer{log, log, w1.at(fresh), w2.at(fresh)}, nil, false},
-		{"fresh then fresher", []note.Signer{log, w1.at(fresh), w1.at(fresher), w2.at(fresh)}, nil, false},
-		{"fresher then fresh", []note.Signer{log, w1.at(fresher), w1.at(fresh), w2.at(fresh)}, nil, false},
-		{"stale then fresh", []note.Signer{log, w1.at(stale), w1.at(fresh), w2.at(fresh)}, nil, false},
-		{"fresh then stale", []note.Signer{log, w1.at(fresh), w1.at(stale), w2.at(fresh)}, nil, false},
-		{"future then fresh", []note.Signer{log, w1.at(future), w1.at(fresh), w2.at(fresh)}, nil, false},
-		{"fresh then future", []note.Signer{log, w1.at(fresh), w1.at(future), w2.at(fresh)}, nil, false},
-		{"one witness twice", []note.Signer{log, w1.at(fresh), w1.at(fresher)}, nil, true},
+		{"invalid witness first", []note.Signer{log, bad, w1.at(fresh), w2.at(fresh)}, trusttlog.CodeCheckpointBad},
+		{"invalid witness last", []note.Signer{log, w1.at(fresh), w2.at(fresh), bad}, trusttlog.CodeCheckpointBad},
+		{"invalid extra witness", []note.Signer{log, w1.at(fresh), w2.at(fresh), corruptSigner{w3.at(fresh)}}, trusttlog.CodeCheckpointBad},
+		{"invalid log first", []note.Signer{badLog, log, w1.at(fresh), w2.at(fresh)}, trusttlog.CodeCheckpointBad},
+		{"invalid log last", []note.Signer{log, w1.at(fresh), w2.at(fresh), badLog}, trusttlog.CodeCheckpointBad},
+		{"repeated log", []note.Signer{log, log, w1.at(fresh), w2.at(fresh)}, trusttlog.CodeOK},
+		{"fresh then fresher", []note.Signer{log, w1.at(fresh), w1.at(fresher), w2.at(fresh)}, trusttlog.CodeOK},
+		{"fresher then fresh", []note.Signer{log, w1.at(fresher), w1.at(fresh), w2.at(fresh)}, trusttlog.CodeOK},
+		{"stale then fresh", []note.Signer{log, w1.at(stale), w1.at(fresh), w2.at(fresh)}, trusttlog.CodeOK},
+		{"fresh then stale", []note.Signer{log, w1.at(fresh), w1.at(stale), w2.at(fresh)}, trusttlog.CodeOK},
+		{"future then fresh", []note.Signer{log, w1.at(future), w1.at(fresh), w2.at(fresh)}, trusttlog.CodeOK},
+		{"fresh then future", []note.Signer{log, w1.at(fresh), w1.at(future), w2.at(fresh)}, trusttlog.CodeOK},
+		{"one witness twice", []note.Signer{log, w1.at(fresh), w1.at(fresher)}, trusttlog.CodeWitnessPolicyUnmet},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := q.checkpoint(t, now, maxAge, tt.signers...)
-			if tt.unmet {
-				if err == nil || errors.Is(err, tlogproof.ErrInvalidSignature) {
-					t.Fatalf("err = %v, want an unmet quorum", err)
-				}
-				return
-			}
-			if tt.want == nil {
-				if err != nil {
-					t.Fatalf("checkpoint: %v", err)
-				}
-				return
-			}
-			if !errors.Is(err, tt.want) {
-				t.Fatalf("err = %v, want %v", err, tt.want)
+			if got := code(err); got != tt.want {
+				t.Fatalf("err = %v, want %q", err, tt.want)
 			}
 		})
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"filippo.io/torchwood"
+	trusttlog "github.com/thelemail/trust/tlog"
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/thelemail/keylog/internal/config"
@@ -122,6 +123,7 @@ func newTestService(t *testing.T) (*fakeEntries, *srv) {
 		NoteVerifierKey:    vkey,
 		VRFKeyPath:         vrfPath,
 		CheckpointInterval: 100 * time.Millisecond,
+		MaxCosignatureAge:  24 * time.Hour,
 		SweepBatch:         16,
 	}
 	log, err := tlogstore.New(ctx, cfg)
@@ -146,9 +148,8 @@ func newTestService(t *testing.T) (*fakeEntries, *srv) {
 		t.Fatal(err)
 	}
 	proofs, err := tlogproof.NewBuilder(tlogproof.BuilderConfig{
-		MaxCosignatureAge: 24 * time.Hour,
-		Policy:            policy,
-		Tiles:             tiles,
+		Policy: policy,
+		Tiles:  tiles,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -208,11 +209,11 @@ func TestSubmitLeafMatchesTheDocumentedFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beta, err := vrf.ProofHash(receipt.VRFProof)
+	beta, err := trusttlog.ProofHash(receipt.VRFProof)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := tlogproof.LeafHash(beta, record)
+	want := trusttlog.LeafHash(beta, record)
 	if !bytes.Equal(receipt.Leaf, want) {
 		t.Fatal("leaf is not vrf_r255(label) || sha256(record)")
 	}
@@ -231,8 +232,8 @@ func TestSweepCompletesEntriesLeftPending(t *testing.T) {
 	pi, beta := svc.vrfKey.Prove([]byte("vlad@thelemail.com"))
 	record := []byte(`{"v":7}`)
 	repo.rows = append(repo.rows, entity.Entry{
-		LabelHash:   tlogproof.LabelHash("vlad@thelemail.com"),
-		Leaf:        tlogproof.LeafHash(beta, record),
+		LabelHash:   trusttlog.LabelHash("vlad@thelemail.com"),
+		Leaf:        trusttlog.LeafHash(beta, record),
 		Record:      record,
 		VRFProof:    pi,
 		SubmittedAt: time.Now().UTC(),

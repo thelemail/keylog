@@ -15,12 +15,12 @@ import (
 
 	"filippo.io/torchwood"
 	"github.com/spf13/cobra"
+	trusttlog "github.com/thelemail/trust/tlog"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
 
 	"github.com/thelemail/keylog/internal/config"
 	"github.com/thelemail/keylog/internal/pkg/tlogstore"
-	"github.com/thelemail/keylog/pkg/tlogproof"
 	"github.com/thelemail/keylog/pkg/vrf"
 )
 
@@ -138,7 +138,7 @@ func generateFixtures(ctx context.Context, origin string) (fixtureFile, error) {
 			`{"algorithm":"openpgp-curve25519-v6","fingerprint":"%s","issuedAt":"%s","label":"%s","version":%d}`,
 			strings.Repeat("ab", 20), now.Add(-time.Hour).Format(time.RFC3339), s.label, s.version)
 		pi, beta := vrfKey.Prove([]byte(s.label))
-		index, _, err := log.Append(ctx, tlogproof.LeafHash(beta, record))
+		index, _, err := log.Append(ctx, trusttlog.LeafHash(beta, record))
 		if err != nil {
 			return fixtureFile{}, err
 		}

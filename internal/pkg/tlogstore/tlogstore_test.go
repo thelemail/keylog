@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"filippo.io/torchwood"
+	trusttlog "github.com/thelemail/trust/tlog"
 	"github.com/transparency-dev/tessera"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
@@ -85,7 +86,7 @@ func TestAppendAndVerifyCheckpoint(t *testing.T) {
 	for {
 		raw, err := os.ReadFile(filepath.Join(cfg.Path, "checkpoint"))
 		if err == nil {
-			cp, _, err := torchwood.VerifyCheckpoint(raw, policy)
+			cp, err := trusttlog.VerifyCheckpoint(raw, policy, time.Now())
 			if err != nil {
 				t.Fatalf("verify checkpoint: %v", err)
 			}
@@ -114,9 +115,8 @@ func TestAppendAndVerifyCheckpoint(t *testing.T) {
 	}
 
 	builder, err := tlogproof.NewBuilder(tlogproof.BuilderConfig{
-		MaxCosignatureAge: cfg.MaxCosignatureAge,
-		Policy:            policy,
-		Tiles:             tileFS,
+		Policy: policy,
+		Tiles:  tileFS,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestAppendAndVerifyCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build proof: %v", err)
 	}
-	if err := torchwood.VerifyProof(policy, tlog.RecordHash(leaf), bundle); err != nil {
+	if _, err := trusttlog.VerifyInclusion(bundle, leaf, policy, time.Now()); err != nil {
 		t.Fatalf("verify built proof: %v", err)
 	}
 	if _, err := builder.Build(ctx, checkpoint.N, leaf, nil); err == nil {

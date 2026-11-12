@@ -95,5 +95,6 @@ func PolicyConfig(cfg config.Log) tlogproof.PolicyConfig {
 		NoteVerifierKey:   cfg.NoteVerifierKey,
 		NoteKeyPath:       cfg.NoteKeyPath,
 		WitnessPolicyPath: cfg.WitnessPolicyPath,
+		MaxCosignatureAge: cfg.MaxCosignatureAge,
 	}
 }

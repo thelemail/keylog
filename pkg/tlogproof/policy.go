@@ -1,12 +1,15 @@
 package tlogproof
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	"filippo.io/torchwood"
+	"github.com/thelemail/trust/tlog"
 	"golang.org/x/mod/sumdb/note"
 )
 
@@ -15,48 +18,74 @@ type PolicyConfig struct {
 	NoteVerifierKey   string
 	NoteKeyPath       string
 	WitnessPolicyPath string
+	MaxCosignatureAge time.Duration
 }
 
-func NewPolicy(cfg PolicyConfig) (torchwood.Policy, error) {
-	if cfg.WitnessPolicyPath != "" {
-		raw, err := os.ReadFile(cfg.WitnessPolicyPath)
-		if err != nil {
-			return nil, fmt.Errorf("tlogproof: read witness policy %s: %w", cfg.WitnessPolicyPath, err)
-		}
-		policy, err := torchwood.ParsePolicy(raw)
-		if err != nil {
-			return nil, fmt.Errorf("tlogproof: parse witness policy: %w", err)
-		}
-		return policy, nil
+func NewPolicy(cfg PolicyConfig) (tlog.Policy, error) {
+	if cfg.MaxCosignatureAge <= 0 {
+		return tlog.Policy{}, errors.New("tlogproof: max cosignature age must be positive")
 	}
-	verifier, err := NewVerifier(cfg)
+	vkey, err := verifierKey(cfg)
 	if err != nil {
-		return nil, err
+		return tlog.Policy{}, err
 	}
-	return torchwood.ThresholdPolicy(2,
-		torchwood.OriginPolicy(cfg.Origin),
-		torchwood.SingleVerifierPolicy(verifier),
-	), nil
+	base := tlog.Policy{
+		Origin:                   cfg.Origin,
+		LogVerifierKey:           vkey,
+		MaxCosignatureAgeSeconds: int64(cfg.MaxCosignatureAge / time.Second),
+	}
+	text := []byte("log " + vkey + "\nquorum none\n")
+	if cfg.WitnessPolicyPath != "" {
+		text, err = os.ReadFile(cfg.WitnessPolicyPath)
+		if err != nil {
+			return tlog.Policy{}, fmt.Errorf("tlogproof: read witness policy %s: %w", cfg.WitnessPolicyPath, err)
+		}
+	}
+	policy, err := tlog.ParseWitnessPolicy(text, base)
+	if err != nil {
+		return tlog.Policy{}, fmt.Errorf("tlogproof: parse witness policy: %w", err)
+	}
+	return policy, nil
 }
 
-func NewVerifier(cfg PolicyConfig) (note.Verifier, error) {
+func verifierKey(cfg PolicyConfig) (string, error) {
 	if cfg.NoteVerifierKey != "" {
-		verifier, err := note.NewVerifier(strings.TrimSpace(cfg.NoteVerifierKey))
-		if err != nil {
-			return nil, fmt.Errorf("tlogproof: parse note verifier key: %w", err)
+		vkey := strings.TrimSpace(cfg.NoteVerifierKey)
+		if _, err := note.NewVerifier(vkey); err != nil {
+			return "", fmt.Errorf("tlogproof: parse note verifier key: %w", err)
 		}
-		return verifier, nil
+		return vkey, nil
 	}
 	if cfg.NoteKeyPath != "" {
 		raw, err := os.ReadFile(cfg.NoteKeyPath)
 		if err != nil {
-			return nil, fmt.Errorf("tlogproof: read note key %s: %w", cfg.NoteKeyPath, err)
+			return "", fmt.Errorf("tlogproof: read note key %s: %w", cfg.NoteKeyPath, err)
 		}
-		verifier, err := torchwood.NewVerifierFromSigner(strings.TrimSpace(string(raw)))
+		vkey, err := verifierKeyFromSigner(strings.TrimSpace(string(raw)))
 		if err != nil {
-			return nil, fmt.Errorf("tlogproof: derive verifier from note key: %w", err)
+			return "", fmt.Errorf("tlogproof: derive verifier from note key: %w", err)
 		}
-		return verifier, nil
+		return vkey, nil
 	}
-	return nil, errors.New("tlogproof: note verifier key or note key path required")
+	return "", errors.New("tlogproof: note verifier key or note key path required")
+}
+
+func verifierKeyFromSigner(skey string) (string, error) {
+	signer, err := note.NewSigner(skey)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.SplitN(skey, "+", 5)
+	if len(parts) != 5 {
+		return "", errors.New("malformed note key")
+	}
+	raw, err := base64.StdEncoding.DecodeString(parts[4])
+	if err != nil || len(raw) != 1+ed25519.SeedSize || raw[0] != 1 {
+		return "", errors.New("note key is not an Ed25519 key")
+	}
+	pub, ok := ed25519.NewKeyFromSeed(raw[1:]).Public().(ed25519.PublicKey)
+	if !ok {
+		return "", errors.New("note key is not an Ed25519 key")
+	}
+	return note.NewEd25519VerifierKey(signer.Name(), pub)
 }
