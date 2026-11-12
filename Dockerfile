@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS builder
 
 ARG BUILDKIT_SBOM_SCAN_STAGE=true
 ARG TARGETOS
@@ -8,10 +8,15 @@ ARG TARGETARCH
 ARG GIT_COMMIT=unknown
 ARG GIT_REF=unknown
 
+ENV GOPRIVATE=github.com/thelemail/trust
+
+RUN apk add --no-cache git
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=secret,id=netrc,target=/root/.netrc,required=true \
     go mod download
 
 COPY . .

@@ -50,6 +50,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
+    secrets:
+      TRUST_READ_TOKEN: ${{ secrets.TRUST_READ_TOKEN }}
 
   build:
     needs: [preflight, verify]
@@ -102,6 +104,8 @@ jobs:
           build-args: |
             GIT_COMMIT=${{ github.sha }}
             GIT_REF=${{ github.ref }}
+          secrets: |
+            netrc=machine github.com login x-access-token password ${{ secrets.TRUST_READ_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
