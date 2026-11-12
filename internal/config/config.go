@@ -40,7 +40,7 @@ type Log struct {
 	VRFKeyPath         string        `env:"KEYLOG_VRF_KEY_PATH"`
 	WitnessPolicyPath  string        `env:"KEYLOG_WITNESS_POLICY_PATH"`
 	CheckpointInterval time.Duration `env:"KEYLOG_CHECKPOINT_INTERVAL"    envDefault:"1s"`
-	MaxCosignatureAge  time.Duration `env:"KEYLOG_MAX_COSIGNATURE_AGE"    envDefault:"25h"`
+	MaxCosignatureAge  time.Duration `env:"KEYLOG_MAX_COSIGNATURE_AGE"    envDefault:"24h"`
 	IntegrationTimeout time.Duration `env:"KEYLOG_INTEGRATION_TIMEOUT"    envDefault:"30s"`
 	SweepInterval      time.Duration `env:"KEYLOG_SWEEP_INTERVAL"         envDefault:"1s"`
 	SweepBatch         int           `env:"KEYLOG_SWEEP_BATCH"            envDefault:"64"`

@@ -98,9 +98,8 @@ func newProofBuilder(cfg config.Log) (*tlogproof.Builder, error) {
 		return nil, fmt.Errorf("tile fs: %w", err)
 	}
 	return tlogproof.NewBuilder(tlogproof.BuilderConfig{
-		MaxCosignatureAge: cfg.MaxCosignatureAge,
-		Policy:            policy,
-		Tiles:             tiles,
+		Policy: policy,
+		Tiles:  tiles,
 	})
 }
 

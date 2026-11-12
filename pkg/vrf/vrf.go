@@ -55,31 +55,3 @@ func GenerateKeyBase64() (privB64, pubB64 string) {
 	return base64.StdEncoding.EncodeToString(priv.Bytes()),
 		base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes())
 }
-
-func ProofHash(pi []byte) ([]byte, error) {
-	proof, err := vrfr255.NewProof(pi)
-	if err != nil {
-		return nil, fmt.Errorf("vrf: parse proof: %w", err)
-	}
-	return proof.Hash(), nil
-}
-
-func Verify(pubB64 string, pi, alpha []byte) (beta []byte, err error) {
-	pk, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pubB64))
-	if err != nil {
-		return nil, fmt.Errorf("vrf: decode public key: %w", err)
-	}
-	pub, err := vrfr255.NewPublicKey(pk)
-	if err != nil {
-		return nil, fmt.Errorf("vrf: parse public key: %w", err)
-	}
-	proof, err := vrfr255.NewProof(pi)
-	if err != nil {
-		return nil, fmt.Errorf("vrf: parse proof: %w", err)
-	}
-	beta, err = pub.Verify(proof, alpha)
-	if err != nil {
-		return nil, fmt.Errorf("vrf: %w", err)
-	}
-	return beta, nil
-}

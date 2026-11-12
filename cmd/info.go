@@ -25,8 +25,9 @@ func newInfoCmd() *cobra.Command {
 			fmt.Fprintf(out, "origin:         %s\n", cfg.Log.Origin)
 			fmt.Fprintf(out, "path:           %s\n", cfg.Log.Path)
 			fmt.Fprintf(out, "witness policy: %s\n", orNone(cfg.Log.WitnessPolicyPath))
-			if verifier, err := tlogproof.NewVerifier(tlogstore.PolicyConfig(cfg.Log)); err == nil {
-				fmt.Fprintf(out, "note verifier:  %s\n", verifier.Name())
+			if policy, err := tlogproof.NewPolicy(tlogstore.PolicyConfig(cfg.Log)); err == nil {
+				fmt.Fprintf(out, "note verifier:  %s\n", policy.LogVerifierKey)
+				fmt.Fprintf(out, "witnesses:      %d of %d\n", policy.WitnessThreshold, len(policy.WitnessVerifierKeys))
 			}
 			if key, err := vrf.Load(cfg.Log.VRFKeyPath); err == nil {
 				fmt.Fprintf(out, "vrf public key: %s\n", key.PublicKeyBase64())

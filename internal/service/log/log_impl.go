@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	trusttlog "github.com/thelemail/trust/tlog"
+
 	"github.com/thelemail/keylog/internal/config"
 	"github.com/thelemail/keylog/internal/entity"
 	"github.com/thelemail/keylog/internal/pkg/tlogstore"
@@ -51,8 +53,8 @@ func (s *srv) Submit(ctx context.Context, in entity.Submission) (entity.Receipt,
 		return entity.Receipt{}, entity.ErrAppendUnavailable
 	}
 	pi, beta := s.vrfKey.Prove([]byte(in.Label))
-	leaf := tlogproof.LeafHash(beta, in.Record)
-	labelHash := tlogproof.LabelHash(in.Label)
+	leaf := trusttlog.LeafHash(beta, in.Record)
+	labelHash := trusttlog.LabelHash(in.Label)
 
 	stored, duplicate, err := s.entries.Claim(ctx, entity.Entry{
 		LabelHash:   labelHash,
@@ -110,7 +112,7 @@ func (s *srv) Proof(ctx context.Context, index int64) ([]byte, error) {
 }
 
 func (s *srv) History(ctx context.Context, label string) (entity.History, error) {
-	entries, err := s.entries.ListByLabelHash(ctx, tlogproof.LabelHash(label))
+	entries, err := s.entries.ListByLabelHash(ctx, trusttlog.LabelHash(label))
 	if err != nil {
 		return entity.History{}, fmt.Errorf("history: %w", err)
 	}

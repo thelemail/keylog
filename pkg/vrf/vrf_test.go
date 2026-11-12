@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	trusttlog "github.com/thelemail/trust/tlog"
 )
 
-func TestProveVerifyRoundTrip(t *testing.T) {
+func TestProofsVerifyWithTrust(t *testing.T) {
 	privB64, pubB64 := GenerateKeyBase64()
 	keyPath := filepath.Join(t.TempDir(), "vrf.key")
 	if err := os.WriteFile(keyPath, []byte(privB64+"\n"), 0o600); err != nil {
@@ -27,7 +29,7 @@ func TestProveVerifyRoundTrip(t *testing.T) {
 		t.Fatalf("beta length = %d, want 64", len(beta))
 	}
 
-	got, err := Verify(pubB64, pi, alpha)
+	got, err := trusttlog.VerifyVRF(pubB64, pi, alpha)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -35,7 +37,7 @@ func TestProveVerifyRoundTrip(t *testing.T) {
 		t.Fatal("verified beta does not match proved beta")
 	}
 
-	hashed, err := ProofHash(pi)
+	hashed, err := trusttlog.ProofHash(pi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,13 +50,13 @@ func TestProveVerifyRoundTrip(t *testing.T) {
 		t.Fatal("prove is not deterministic")
 	}
 
-	if _, err := Verify(pubB64, pi, []byte("other@thelemail.com")); err == nil {
+	if _, err := trusttlog.VerifyVRF(pubB64, pi, []byte("other@thelemail.com")); err == nil {
 		t.Fatal("verify accepted wrong alpha")
 	}
 
 	tampered := bytes.Clone(pi)
 	tampered[0] ^= 0x01
-	if _, err := Verify(pubB64, tampered, alpha); err == nil {
+	if _, err := trusttlog.VerifyVRF(pubB64, tampered, alpha); err == nil {
 		t.Fatal("verify accepted tampered proof")
 	}
 }

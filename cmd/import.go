@@ -9,12 +9,12 @@ import (
 
 	"filippo.io/torchwood"
 	"github.com/spf13/cobra"
+	trusttlog "github.com/thelemail/trust/tlog"
 
 	keylog "github.com/thelemail/keylog/internal"
 	"github.com/thelemail/keylog/internal/entity"
 	"github.com/thelemail/keylog/internal/pkg/tlogstore"
 	"github.com/thelemail/keylog/pkg/tlogproof"
-	"github.com/thelemail/keylog/pkg/vrf"
 )
 
 type importLine struct {
@@ -58,9 +58,8 @@ func newImportCmd() *cobra.Command {
 					return fmt.Errorf("tile fs: %w", err)
 				}
 				builder, err = tlogproof.NewBuilder(tlogproof.BuilderConfig{
-					MaxCosignatureAge: cfg.Log.MaxCosignatureAge,
-					Policy:            policy,
-					Tiles:             tiles,
+					Policy: policy,
+					Tiles:  tiles,
 				})
 				if err != nil {
 					return err
@@ -167,15 +166,15 @@ func toEntry(in importLine) (entity.Entry, error) {
 	if len(in.Record) == 0 {
 		return entity.Entry{}, fmt.Errorf("record is empty")
 	}
-	beta, err := vrf.ProofHash(in.VRFProof)
+	beta, err := trusttlog.ProofHash(in.VRFProof)
 	if err != nil {
 		return entity.Entry{}, err
 	}
 	index := in.Index
 	includedAt := in.IncludedAt.UTC()
 	return entity.Entry{
-		LabelHash:   tlogproof.LabelHash(in.Label),
-		Leaf:        tlogproof.LeafHash(beta, in.Record),
+		LabelHash:   trusttlog.LabelHash(in.Label),
+		Leaf:        trusttlog.LeafHash(beta, in.Record),
 		Record:      in.Record,
 		Metadata:    in.Metadata,
 		VRFProof:    in.VRFProof,
